@@ -1,3 +1,12 @@
+# Project specific 
+
+train_images/
+test_images/
+test_images.zip
+sample.json
+train_annotations.json
+train_images.zip
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
