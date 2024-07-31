@@ -1,117 +1,112 @@
 import torch
-import torchvision
-from torchvision.models.detection import maskrcnn_resnet50_fpn
-from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
-from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
-from torch.utils.data import DataLoader, Dataset
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from torchvision import transforms
 from tqdm import tqdm
-import numpy as np
-from shapely.geometry import Polygon
-import skimage.draw
-import os
-import json
-from sklearn.model_selection import train_test_split
-from pq_calculate import compute_pq
+from models.u_net import UNet
 from dataset import SatelliteDataset
+from helper import visualize_epoch, plot_losses
+from logger import Logger
 
-device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+# Set up CUDA device
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-train_image_folder = 'train_images/images'
-annotation_file = 'train_annotations.json'
+# Set up logger
+logger = Logger(log_dir="logs")
 
-image_paths = [os.path.join(train_image_folder, f) for f in os.listdir(train_image_folder) if f.endswith('.tif')]
+# Set up the dataset and data loaders
+image_dir = 'train_images/images'
+annotation_file = 'train_annotation.json'
 
-with open(annotation_file, 'r') as f:
-    annotations = json.load(f)
+transform = transforms.Compose([
+    transforms.Normalize(mean=[0.485], std=[0.229])
+])
 
-image_to_annotation = {item['file_name']: item['annotations'] for item in annotations['images']}
+full_dataset = SatelliteDataset(image_dir, annotation_file, transform=transform)
 
-dataset = [(path, image_to_annotation[os.path.basename(path)]) for path in image_paths]
+# Split the dataset into train and validation sets
+train_size = int(0.8 * len(full_dataset))
+val_size = len(full_dataset) - train_size
+train_dataset, val_dataset = torch.utils.data.random_split(full_dataset, [train_size, val_size])
 
-train_data, val_data = train_test_split(dataset, test_size=0.3, random_state=42)
+batch_size = 6
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=8)
+val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
 
-train_dataset = SatelliteDataset([item[0] for item in train_data], [item[1] for item in train_data])
-val_dataset = SatelliteDataset([item[0] for item in val_data], [item[1] for item in val_data])
+# Initialize the model, loss function, and optimizer
+model = UNet(n_channels=1, n_classes=1).to(device)  # Single channel output for binary segmentation
+criterion = nn.BCEWithLogitsLoss()
+optimizer = optim.Adam(model.parameters(), lr=0.0001)
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=3, verbose=True)
 
-train_data_loader = DataLoader(train_dataset, batch_size=8, shuffle=True, num_workers=4)
-val_data_loader = DataLoader(val_dataset, batch_size=8, shuffle=False, num_workers=4)
+# Log configurations
+logger.log_model_config(model)
+logger.log_optimizer_config(optimizer)
+logger.log_scheduler_config(scheduler)
+logger.log_dataset_config(full_dataset, train_size, val_size, batch_size)
+logger.log_training_config(num_epochs=10, criterion=criterion, device=device)
 
-print(f"Training samples: {len(train_dataset)}")
-print(f"Validation samples: {len(val_dataset)}")
-
-# Model setup
-num_classes = 2  # Background and field
-model = maskrcnn_resnet50_fpn(pretrained=True)
-in_features = model.roi_heads.box_predictor.cls_score.in_features
-model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
-in_features_mask = model.roi_heads.mask_predictor.conv5_mask.in_channels
-hidden_layer = 256
-model.roi_heads.mask_predictor = MaskRCNNPredictor(in_features_mask, hidden_layer, num_classes)
-model.to(device)
-
-params = [p for p in model.parameters() if p.requires_grad]
-optimizer = torch.optim.SGD(params, lr=0.005, momentum=0.9, weight_decay=0.0005)
-
+# Training loop
 num_epochs = 10
+train_losses = []
+val_losses = []
+best_val_loss = float('inf')
+best_epoch = 0
+
 for epoch in range(num_epochs):
     model.train()
-    total_train_loss = 0
+    train_loss = 0.0
     
-    for images, targets in tqdm(train_data_loader, desc=f"Epoch {epoch+1}/{num_epochs} - Training"):
-        images = list(image.to(device) for image in images)
-        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-        
-        loss_dict = model(images, targets)
-        losses = sum(loss for loss in loss_dict.values())
-        
-        pred_masks = model(images)[0]['masks']
-        gt_masks = targets[0]['masks']
-
-        pred_polygons = []
-        gt_polygons = []
-
-        for mask in pred_masks:
-            mask_np = mask.squeeze().cpu().numpy()
-            contours = skimage.measure.find_contours(mask_np, 0.5)
-            if contours:
-                polygon = Polygon(contours[0])
-                if polygon.is_valid and polygon.area > 0:
-                    pred_polygons.append(polygon)
-
-        for mask in gt_masks:
-            mask_np = mask.squeeze().cpu().numpy()
-            contours = skimage.measure.find_contours(mask_np, 0.5)
-            if contours:
-                polygon = Polygon(contours[0])
-                if polygon.is_valid and polygon.area > 0:
-                    gt_polygons.append(polygon)
-
-        pq, _, _ = compute_pq(gt_polygons, pred_polygons)
-        pq_loss = 1 - pq
-
-        losses += pq_loss
-        total_train_loss += losses.item()
+    for ndvi, mask in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}"):
+        ndvi, mask = ndvi.to(device), mask.to(device)
         
         optimizer.zero_grad()
-        losses.backward()
+        outputs = model(ndvi)
+        loss = criterion(outputs, mask)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
+        
+        train_loss += loss.item()
     
-    avg_train_loss = total_train_loss / len(train_data_loader)
+    train_loss /= len(train_loader)
+    train_losses.append(train_loss)
     
-    # Validation loop
     model.eval()
-    total_val_loss = 0
+    val_loss = 0.0
     with torch.no_grad():
-        for images, targets in tqdm(val_data_loader, desc=f"Epoch {epoch+1}/{num_epochs} - Validation"):
-            images = list(image.to(device) for image in images)
-            targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-            
-            loss_dict = model(images, targets)
-            losses = sum(loss for loss in loss_dict.values())
-            total_val_loss += losses.item()
+        for ndvi, mask in val_loader:
+            ndvi, mask = ndvi.to(device), mask.to(device)
+            outputs = model(ndvi)
+            loss = criterion(outputs, mask)
+            val_loss += loss.item()
     
-    avg_val_loss = total_val_loss / len(val_data_loader)
+    val_loss /= len(val_loader)
+    val_losses.append(val_loss)
     
-    print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+    if val_loss < best_val_loss:
+        best_val_loss = val_loss
+        best_epoch = epoch
+        torch.save(model.state_dict(), 'best_model.pth')
+    
+    scheduler.step(val_loss)
+    current_lr = optimizer.param_groups[0]['lr']
+    
+    print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, LR: {current_lr:.6f}")
+    
+    # Log epoch results
+    logger.log_epoch(epoch+1, train_loss, val_loss, current_lr)
+    
+    # Visualize epoch results
+    visualize_epoch(model, full_dataset, epoch, device)
 
-print("Training complete!")
+# Plot and save losses
+plot_losses(train_losses, val_losses, num_epochs)
+
+# Log final results
+logger.log_final_results(best_epoch+1, best_val_loss)
+
+print(f"Best model saved at epoch {best_epoch+1} with validation loss: {best_val_loss:.4f}")
+print("Training complete. Best model saved as 'best_model.pth' and loss plot saved as 'loss_plot.png'")
+print(f"Training log saved at {logger.log_file}")

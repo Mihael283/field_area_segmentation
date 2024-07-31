@@ -5,93 +5,67 @@ import rasterio
 from rasterio.errors import RasterioIOError
 from shapely.geometry import Polygon
 import skimage.draw
-
+import cv2
+import json
 class SatelliteDataset(Dataset):
-    def __init__(self, image_paths, annotations):
-        self.image_paths = image_paths
-        self.annotations = annotations
-
+    def __init__(self, image_dir, annotation_file, target_size=(800, 800), transform=None):
+        self.image_dir = image_dir
+        self.transform = transform
+        self.target_size = target_size
+        
+        with open(annotation_file, 'r') as f:
+            self.annotations = json.load(f)['images']
+    
     def __len__(self):
-        return len(self.image_paths)
-
+        return len(self.annotations)
+    
+    def resize_and_pad(self, image):
+        h, w = image.shape[:2]
+        target_h, target_w = self.target_size
+        
+        scale = min(target_h / h, target_w / w)
+        
+        new_h, new_w = int(h * scale), int(w * scale)
+        resized = cv2.resize(image, (new_w, new_h))
+        
+        pad_h = (target_h - new_h) // 2
+        pad_w = (target_w - new_w) // 2
+        
+        padded = np.pad(resized, ((pad_h, target_h - new_h - pad_h), 
+                                  (pad_w, target_w - new_w - pad_w)), 
+                        mode='constant', constant_values=0)
+        
+        return padded, (pad_h, pad_w, new_h, new_w)
+    
     def __getitem__(self, idx):
-        image_path = self.image_paths[idx]
+        img_info = self.annotations[idx]
+        img_path = f"{self.image_dir}/{img_info['file_name']}"
         
-        try:
-            with rasterio.open(image_path) as src:
-                image = src.read()
-                rgb_bands = [3, 2, 1]  # Assuming B4=Red, B3=Green, B2=Blue
-                rgb_image = np.dstack([image[i-1] for i in rgb_bands])  # rasterio uses 1-based indexing
-                rgb_image = (rgb_image / rgb_image.max() * 255).astype(np.uint8)
-                image_tensor = torch.from_numpy(rgb_image).float().permute(2, 0, 1) / 255.0
-        except RasterioIOError:
-            print(f"Error reading image: {image_path}")
-            return None, None
+        with rasterio.open(img_path) as src:
+            red = src.read(4).astype(float)
+            nir = src.read(8).astype(float)
+            ndvi = (nir - red) / (nir + red)
+            ndvi = (ndvi - ndvi.min()) / (ndvi.max() - ndvi.min()+ 1e-8)
+            ndvi = np.nan_to_num(ndvi, nan=0.0)
         
-        boxes = []
-        masks = []
-        for ann in self.annotations[idx]:
-            try:
-                segmentation = ann['segmentation']
-                if len(segmentation) < 6 or len(segmentation) % 2 != 0:  # At least 3 points needed
-                    print(f"Skipping invalid segmentation in image {image_path}")
-                    continue
-                
-                coords = np.array(segmentation).reshape(-1, 2)
-                polygon = Polygon(coords)
-                
-                if not polygon.is_valid or polygon.is_empty:
-                    print(f"Skipping invalid polygon in image {image_path}")
-                    continue
-                
-                mask = self.polygon_to_mask(polygon, image_tensor.shape[1:])
-                if np.sum(mask) == 0:
-                    print(f"Skipping empty mask in image {image_path}")
-                    continue
-                
-                masks.append(mask)
-                
-                bounds = polygon.bounds
-                boxes.append([bounds[0], bounds[1], bounds[2], bounds[3]])
-            except Exception as e:
-                print(f"Error processing annotation in image {image_path}: {e}")
-                continue
+        ndvi_padded, (pad_h, pad_w, new_h, new_w) = self.resize_and_pad(ndvi)
         
-        if not boxes:
-            print(f"No valid annotations found for image {image_path}")
-            return None, None
-        
-        # Convert list of masks to a single numpy array
-        masks = np.array(masks, dtype=np.uint8)
-        
-        boxes = torch.tensor(boxes, dtype=torch.float32)
-        masks = torch.from_numpy(masks)
-        labels = torch.ones((len(boxes),), dtype=torch.int64)  # Assuming all are 'field' class
-        
-        target = {
-            'boxes': boxes,
-            'labels': labels,
-            'masks': masks
-        }
-        
-        return image_tensor, target
+        mask = np.zeros(self.target_size, dtype=np.uint8)
+        mask = (mask > 0).astype(np.uint8)
 
-    def polygon_to_mask(self, polygon, image_shape):
-        mask = np.zeros(image_shape, dtype=np.uint8)
-        coords = np.array(polygon.exterior.coords).astype(int)
+        for ann in img_info['annotations']:
+            coords = np.array(ann['segmentation']).reshape(-1, 2)
+            
+            coords[:, 0] = coords[:, 0] * new_w / ndvi.shape[1] + pad_w
+            coords[:, 1] = coords[:, 1] * new_h / ndvi.shape[0] + pad_h
+            
+            coords = coords.astype(int)
+            cv2.fillPoly(mask, [coords], 1)
         
-        # Clip coordinates to image boundaries
-        coords[:, 0] = np.clip(coords[:, 0], 0, image_shape[1] - 1)
-        coords[:, 1] = np.clip(coords[:, 1], 0, image_shape[0] - 1)
+        ndvi_tensor = torch.from_numpy(ndvi_padded).float().unsqueeze(0)
+        mask_tensor = torch.from_numpy(mask).float()
         
-        rr, cc = skimage.draw.polygon(coords[:, 1], coords[:, 0])
+        if self.transform:
+            ndvi_tensor = self.transform(ndvi_tensor)
         
-        # Clip rr and cc to image boundaries
-        rr = np.clip(rr, 0, image_shape[0] - 1)
-        cc = np.clip(cc, 0, image_shape[1] - 1)
-        
-        mask[rr, cc] = 1
-        return mask
-
-def collate_fn(batch):
-    return tuple(zip(*[b for b in batch if b[0] is not None]))
+        return ndvi_tensor, mask_tensor
