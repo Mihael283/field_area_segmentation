@@ -28,13 +28,23 @@ def visualize_epoch(model, dataset, epoch, device):
     plt.savefig(f'epoch_{epoch+1}_visualization.png')
     plt.close()
 
-def plot_losses(train_losses, val_losses, num_epochs):
-    plt.figure(figsize=(10, 5))
+def plot_losses(train_losses, val_losses, val_pq_scores, num_epochs):
+    plt.figure(figsize=(15, 5))
+    plt.subplot(1, 3, 1)
     plt.plot(range(1, num_epochs+1), train_losses, label='Train Loss')
     plt.plot(range(1, num_epochs+1), val_losses, label='Validation Loss')
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
     plt.title('Training and Validation Losses')
     plt.legend()
-    plt.savefig('loss_plot.png')
+    
+    plt.subplot(1, 3, 2)
+    plt.plot(range(1, num_epochs+1), val_pq_scores, label='Validation PQ')
+    plt.xlabel('Epoch')
+    plt.ylabel('PQ Score')
+    plt.title('Validation PQ Score')
+    plt.legend()
+    
+    plt.tight_layout()
+    plt.savefig('training_plots.png')
     plt.close()

@@ -54,11 +54,14 @@ class Logger:
             "device": str(device)
         }
 
-    def log_epoch(self, epoch, train_loss, val_loss, lr):
+    def log_epoch(self, epoch, train_loss, val_loss, val_pq, val_sq, val_rq, lr):
         self.log_data["epochs"].append({
             "epoch": epoch,
             "train_loss": train_loss,
             "val_loss": val_loss,
+            "val_pq": val_pq,
+            "val_sq": val_sq,
+            "val_rq": val_rq,
             "learning_rate": lr
         })
 
@@ -66,10 +69,12 @@ class Logger:
         with open(self.log_file, 'w') as f:
             json.dump(self.log_data, f, indent=4)
 
-    def log_final_results(self, best_epoch, best_val_loss):
+    def log_final_results(self, total_epochs, best_val_pq):
         self.log_data["final_results"] = {
-            "best_epoch": best_epoch,
-            "best_val_loss": best_val_loss,
+            "total_epochs": total_epochs,
+            "best_val_pq": best_val_pq,
             "training_end": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
         self.save_log()
+
+    

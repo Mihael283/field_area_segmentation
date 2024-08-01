@@ -8,7 +8,12 @@ from models.u_net import UNet
 from dataset import SatelliteDataset
 from helper import visualize_epoch, plot_losses
 from logger import Logger
-
+from pq_calculate import compute_pq
+import numpy as np
+import cv2
+import numpy as np
+from shapely.geometry import Polygon
+from shapely.validation import make_valid
 # Set up CUDA device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -47,12 +52,91 @@ logger.log_scheduler_config(scheduler)
 logger.log_dataset_config(full_dataset, train_size, val_size, batch_size)
 logger.log_training_config(num_epochs=10, criterion=criterion, device=device)
 
+import cv2
+from shapely.geometry import Polygon
+
+def getIOU(polygon1: Polygon, polygon2: Polygon) -> float:
+    if not polygon1.is_valid or not polygon2.is_valid:
+        return 0
+    try:
+        intersection = polygon1.intersection(polygon2).area
+        union = polygon1.union(polygon2).area
+        if union == 0:
+            return 0
+        return intersection / union
+    except Exception:
+        return 0
+
+def mask_to_polygons(mask, min_area=10):
+    """
+    Convert a binary mask to a list of polygons.
+    
+    Args:
+    mask (numpy.ndarray): A 2D binary numpy array where 1 indicates the object.
+    min_area (int): Minimum area (in pixels) for a polygon to be included.
+    
+    Returns:
+    list: A list of Shapely Polygon objects.
+    """
+    # Ensure the mask is binary
+    mask = (mask > 0.5).astype(np.uint8)
+    
+    # Find contours in the mask
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    polygons = []
+    for contour in contours:
+        # Convert the contour to a Shapely polygon
+        if len(contour) < 3:  # A polygon needs at least 3 points
+            continue
+        poly = Polygon(contour.squeeze())
+        
+        # Ensure the polygon is valid
+        if not poly.is_valid:
+            poly = make_valid(poly)
+            if poly.geom_type != 'Polygon':
+                continue
+        
+        # Only include polygons with area greater than min_area
+        if poly.area > min_area:
+            # Simplify the polygon to reduce the number of points
+            poly = poly.simplify(1.0, preserve_topology=True)
+            polygons.append(poly)
+    
+    return polygons
+
+
+def compute_epoch_pq(model, dataloader, device):
+    model.eval()
+    all_gt_polygons = []
+    all_pred_polygons = []
+    
+    with torch.no_grad():
+        for ndvi, mask in dataloader:
+            ndvi, mask = ndvi.to(device), mask.to(device)
+            outputs = model(ndvi)
+            predicted = (torch.sigmoid(outputs) > 0.5).float()
+            
+            for i in range(mask.shape[0]):
+                gt_polygons = mask_to_polygons(mask[i].cpu().numpy())
+                pred_polygons = mask_to_polygons(predicted[i].cpu().numpy())
+                all_gt_polygons.extend(gt_polygons)
+                all_pred_polygons.extend(pred_polygons)
+    
+    try:
+        pq, sq, rq = compute_pq(all_gt_polygons, all_pred_polygons)
+    except Exception as e:
+        print(f"Error computing PQ score: {e}")
+        pq, sq, rq = 0, 0, 0
+    
+    return pq, sq, rq
+
 # Training loop
 num_epochs = 10
 train_losses = []
 val_losses = []
-best_val_loss = float('inf')
-best_epoch = 0
+val_pq_scores = []
+best_val_pq = 0.0
 
 for epoch in range(num_epochs):
     model.train()
@@ -73,6 +157,7 @@ for epoch in range(num_epochs):
     train_loss /= len(train_loader)
     train_losses.append(train_loss)
     
+    # Compute validation loss and PQ score
     model.eval()
     val_loss = 0.0
     with torch.no_grad():
@@ -85,28 +170,32 @@ for epoch in range(num_epochs):
     val_loss /= len(val_loader)
     val_losses.append(val_loss)
     
-    if val_loss < best_val_loss:
-        best_val_loss = val_loss
-        best_epoch = epoch
-        torch.save(model.state_dict(), 'best_model.pth')
+    val_pq, val_sq, val_rq = compute_epoch_pq(model, val_loader, device)
+    val_pq_scores.append(val_pq)
     
-    scheduler.step(val_loss)
+    if val_pq > best_val_pq:
+        best_val_pq = val_pq
+        torch.save(model.state_dict(), 'best_model.pth')
+        print(f"New best model saved with validation PQ: {best_val_pq:.4f}")
+    
+    scheduler.step(val_pq)
     current_lr = optimizer.param_groups[0]['lr']
     
-    print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, LR: {current_lr:.6f}")
+    print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Val PQ: {val_pq:.4f}, LR: {current_lr:.6f}")
     
     # Log epoch results
-    logger.log_epoch(epoch+1, train_loss, val_loss, current_lr)
+    logger.log_epoch(epoch+1, train_loss, val_loss, val_pq, val_sq, val_rq, current_lr)
+    logger.save_log()  # Save log after each epoch
     
     # Visualize epoch results
     visualize_epoch(model, full_dataset, epoch, device)
 
-# Plot and save losses
-plot_losses(train_losses, val_losses, num_epochs)
 
-# Log final results
-logger.log_final_results(best_epoch+1, best_val_loss)
+plot_losses(train_losses, val_losses, val_pq_scores, num_epochs)
 
-print(f"Best model saved at epoch {best_epoch+1} with validation loss: {best_val_loss:.4f}")
-print("Training complete. Best model saved as 'best_model.pth' and loss plot saved as 'loss_plot.png'")
+logger.log_final_results(epoch+1, best_val_pq)
+logger.save_log() 
+
+print(f"Best model saved with validation PQ: {best_val_pq:.4f}")
+print("Training complete. Best model saved as 'best_model.pth' and plots saved as 'training_plots.png'")
 print(f"Training log saved at {logger.log_file}")
