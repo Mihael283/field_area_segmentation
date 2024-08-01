@@ -19,6 +19,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Set up logger
 logger = Logger(log_dir="logs")
+num_epochs = 20
 
 # Set up the dataset and data loaders
 image_dir = 'train_images/images'
@@ -31,7 +32,7 @@ transform = transforms.Compose([
 full_dataset = SatelliteDataset(image_dir, annotation_file, transform=transform)
 
 # Split the dataset into train and validation sets
-train_size = int(0.8 * len(full_dataset))
+train_size = int(0.7 * len(full_dataset))
 val_size = len(full_dataset) - train_size
 train_dataset, val_dataset = torch.utils.data.random_split(full_dataset, [train_size, val_size])
 
@@ -42,15 +43,15 @@ val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_w
 # Initialize the model, loss function, and optimizer
 model = UNet(n_channels=1, n_classes=1).to(device)  # Single channel output for binary segmentation
 criterion = nn.BCEWithLogitsLoss()
-optimizer = optim.Adam(model.parameters(), lr=0.0001)
-scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=3, verbose=True)
+optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-4)
+scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
 
 # Log configurations
 logger.log_model_config(model)
 logger.log_optimizer_config(optimizer)
 logger.log_scheduler_config(scheduler)
 logger.log_dataset_config(full_dataset, train_size, val_size, batch_size)
-logger.log_training_config(num_epochs=10, criterion=criterion, device=device)
+logger.log_training_config(num_epochs=num_epochs, criterion=criterion, device=device)
 
 import cv2
 from shapely.geometry import Polygon
@@ -132,7 +133,6 @@ def compute_epoch_pq(model, dataloader, device):
     return pq, sq, rq
 
 # Training loop
-num_epochs = 10
 train_losses = []
 val_losses = []
 val_pq_scores = []
@@ -178,7 +178,7 @@ for epoch in range(num_epochs):
         torch.save(model.state_dict(), 'best_model.pth')
         print(f"New best model saved with validation PQ: {best_val_pq:.4f}")
     
-    scheduler.step(val_pq)
+    scheduler.step()
     current_lr = optimizer.param_groups[0]['lr']
     
     print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Val PQ: {val_pq:.4f}, LR: {current_lr:.6f}")

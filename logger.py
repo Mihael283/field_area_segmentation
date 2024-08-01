@@ -33,11 +33,16 @@ class Logger:
         }
 
     def log_scheduler_config(self, scheduler):
-        self.log_data["scheduler_config"] = {
-            "name": scheduler.__class__.__name__,
-            "factor": scheduler.factor,
-            "patience": scheduler.patience
-        }
+        try:
+            self.log_data["scheduler_config"] = {
+                "name": scheduler.__class__.__name__,
+                "factor": scheduler.factor,
+                "patience": scheduler.patience
+            }
+        except AttributeError:
+            self.log_data["scheduler_config"] = {
+                "name": scheduler.__class__.__name__
+            }
 
     def log_dataset_config(self, dataset, train_size, val_size, batch_size):
         self.log_data["dataset_config"] = {
