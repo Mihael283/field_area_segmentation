@@ -6,7 +6,7 @@ from torchvision import transforms
 from tqdm import tqdm
 from models.u_net import UNet
 from dataset import SatelliteDataset
-from helper import visualize_epoch, plot_losses
+from helper import visualize_epoch, plot_losses, visualize_training_batch
 from logger import Logger
 from pq_calculate import compute_pq
 import numpy as np
@@ -17,11 +17,9 @@ from shapely.validation import make_valid
 # Set up CUDA device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Set up logger
 logger = Logger(log_dir="logs")
 num_epochs = 20
 
-# Set up the dataset and data loaders
 image_dir = 'train_images/images'
 annotation_file = 'train_annotation.json'
 
@@ -29,19 +27,26 @@ transform = transforms.Compose([
     transforms.Normalize(mean=[0.485], std=[0.229])
 ])
 
-full_dataset = SatelliteDataset(image_dir, annotation_file, transform=transform)
 
-# Split the dataset into train and validation sets
+full_dataset = SatelliteDataset(image_dir, annotation_file, transform=transform, augment=False)
+
 train_size = int(0.7 * len(full_dataset))
 val_size = len(full_dataset) - train_size
-train_dataset, val_dataset = torch.utils.data.random_split(full_dataset, [train_size, val_size])
+train_indices, val_indices = torch.utils.data.random_split(range(len(full_dataset)), [train_size, val_size])
+
+train_dataset = SatelliteDataset(image_dir, annotation_file, transform=transform, augment=True)
+train_dataset = torch.utils.data.Subset(train_dataset, train_indices)
+
+val_dataset = torch.utils.data.Subset(full_dataset, val_indices)
 
 batch_size = 6
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=8)
 val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
 
-# Initialize the model, loss function, and optimizer
-model = UNet(n_channels=1, n_classes=1).to(device)  # Single channel output for binary segmentation
+print(f"Train dataset size: {len(train_dataset)}")
+print(f"Validation dataset size: {len(val_dataset)}")
+
+model = UNet(n_channels=1, n_classes=1).to(device) 
 criterion = nn.BCEWithLogitsLoss()
 optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-4)
 scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
@@ -79,28 +84,22 @@ def mask_to_polygons(mask, min_area=10):
     Returns:
     list: A list of Shapely Polygon objects.
     """
-    # Ensure the mask is binary
     mask = (mask > 0.5).astype(np.uint8)
     
-    # Find contours in the mask
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     polygons = []
     for contour in contours:
-        # Convert the contour to a Shapely polygon
-        if len(contour) < 3:  # A polygon needs at least 3 points
+        if len(contour) < 3: 
             continue
         poly = Polygon(contour.squeeze())
         
-        # Ensure the polygon is valid
         if not poly.is_valid:
             poly = make_valid(poly)
             if poly.geom_type != 'Polygon':
                 continue
         
-        # Only include polygons with area greater than min_area
         if poly.area > min_area:
-            # Simplify the polygon to reduce the number of points
             poly = poly.simplify(1.0, preserve_topology=True)
             polygons.append(poly)
     
@@ -132,7 +131,6 @@ def compute_epoch_pq(model, dataloader, device):
     
     return pq, sq, rq
 
-# Training loop
 train_losses = []
 val_losses = []
 val_pq_scores = []
@@ -141,6 +139,9 @@ best_val_pq = 0.0
 for epoch in range(num_epochs):
     model.train()
     train_loss = 0.0
+    
+    first_batch = next(iter(train_loader))
+    visualize_training_batch(first_batch[0], first_batch[1], epoch+1)
     
     for ndvi, mask in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}"):
         ndvi, mask = ndvi.to(device), mask.to(device)
@@ -157,7 +158,6 @@ for epoch in range(num_epochs):
     train_loss /= len(train_loader)
     train_losses.append(train_loss)
     
-    # Compute validation loss and PQ score
     model.eval()
     val_loss = 0.0
     with torch.no_grad():
@@ -183,11 +183,9 @@ for epoch in range(num_epochs):
     
     print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Val PQ: {val_pq:.4f}, LR: {current_lr:.6f}")
     
-    # Log epoch results
     logger.log_epoch(epoch+1, train_loss, val_loss, val_pq, val_sq, val_rq, current_lr)
-    logger.save_log()  # Save log after each epoch
+    logger.save_log()
     
-    # Visualize epoch results
     visualize_epoch(model, full_dataset, epoch, device)
 
 

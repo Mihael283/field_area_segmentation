@@ -25,7 +25,7 @@ def visualize_epoch(model, dataset, epoch, device):
     ax3.set_title('Predicted Mask')
     ax3.axis('off')
     
-    plt.savefig(f'epoch_{epoch+1}_visualization.png')
+    plt.savefig(f'epoch_visualize/epoch_{epoch+1}_visualization.png')
     plt.close()
 
 def plot_losses(train_losses, val_losses, val_pq_scores, num_epochs):
@@ -47,4 +47,29 @@ def plot_losses(train_losses, val_losses, val_pq_scores, num_epochs):
     
     plt.tight_layout()
     plt.savefig('training_plots.png')
+    plt.close()
+
+
+def visualize_training_batch(images, masks, epoch):
+    """
+    Visualize a batch of training images and their corresponding masks.
+    """
+    fig, axes = plt.subplots(2, 4, figsize=(20, 10))
+    for i in range(4):
+        if i < images.shape[0]:
+            # NDVI Image
+            axes[0, i].imshow(images[i].squeeze().cpu().numpy(), cmap='viridis')
+            axes[0, i].set_title(f"NDVI {i+1}")
+            axes[0, i].axis('off')
+            
+            # Mask
+            axes[1, i].imshow(masks[i].squeeze().cpu().numpy(), cmap='gray')
+            axes[1, i].set_title(f"Mask {i+1}")
+            axes[1, i].axis('off')
+        else:
+            axes[0, i].axis('off')
+            axes[1, i].axis('off')
+    
+    plt.tight_layout()
+    plt.savefig(f'training_batch_visualization_epoch_{epoch}.png')
     plt.close()
