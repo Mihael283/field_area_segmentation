@@ -2,7 +2,7 @@ import torch
 import json
 import os
 from tqdm import tqdm
-from models.u_net import UNet
+from models.advanced_u_net import AdvancedUNet
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 from shapely.geometry import Polygon
@@ -40,7 +40,7 @@ class TestDataset(Dataset):
         return ndvi, file_name
 
 def mask_to_polygons(mask, min_area=10):
-    mask = (mask > 0.5).astype(np.uint8)
+    mask = (mask > 0.5).astype(np.uint8) * 255  # Ensure mask is 0 or 255
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     polygons = []
@@ -78,9 +78,11 @@ def predict_and_save(model, test_loader, device, output_file):
             
             # Get current image size
             if ndvi.dim() == 4:  # (B, C, H, W)
-                _, _, height, width = ndvi.shape
+                batch_size, channels, height, width = ndvi.shape
             elif ndvi.dim() == 3:  # (C, H, W)
-                _, height, width = ndvi.shape
+                channels, height, width = ndvi.shape
+                batch_size = 1
+                ndvi = ndvi.unsqueeze(0)
             else:
                 raise ValueError(f"Unexpected input shape: {ndvi.shape}")
             
@@ -95,23 +97,18 @@ def predict_and_save(model, test_loader, device, output_file):
             print(f"Output shape: {outputs.shape}")
             
             # Remove padding from the output
-            if outputs.dim() == 4:
-                outputs = outputs[:, :, :height, :width]
-            elif outputs.dim() == 3:
-                outputs = outputs[:, :height, :width]
-            elif outputs.dim() == 2:
-                outputs = outputs[:height, :width]
-            else:
-                raise ValueError(f"Unexpected output shape: {outputs.shape}")
+            if isinstance(outputs, tuple):
+                outputs = outputs[0]  # Take only the main output, not the deep supervision outputs
+            outputs = outputs[:, :, :height, :width]
             
             predicted = (torch.sigmoid(outputs) > 0.5).float()
 
-            for i, file_name in enumerate(file_names):
-                pred_mask = predicted[i].cpu().numpy() if predicted.dim() > 2 else predicted.cpu().numpy()
+            for i in range(batch_size):
+                pred_mask = predicted[i, 0].cpu().numpy()  # Take the first channel
                 polygons = mask_to_polygons(pred_mask)
 
                 image_result = {
-                    "file_name": file_name,
+                    "file_name": file_names[i],
                     "annotations": []
                 }
 
@@ -138,7 +135,7 @@ test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False, num_workers=
 
 # Load the trained model
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = UNet(n_channels=1, n_classes=1).to(device)
+model = AdvancedUNet(n_channels=1, n_classes=1).to(device)
 model.load_state_dict(torch.load('best_model.pth', weights_only=True))
 
 # Run predictions and save results

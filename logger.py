@@ -59,14 +59,12 @@ class Logger:
             "device": str(device)
         }
 
-    def log_epoch(self, epoch, train_loss, val_loss, val_pq, val_sq, val_rq, lr):
+    def log_epoch(self, epoch, train_loss, val_loss, val_dice, lr):
         self.log_data["epochs"].append({
             "epoch": epoch,
             "train_loss": train_loss,
             "val_loss": val_loss,
-            "val_pq": val_pq,
-            "val_sq": val_sq,
-            "val_rq": val_rq,
+            "val_dice": val_dice,
             "learning_rate": lr
         })
 
