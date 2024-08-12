@@ -71,5 +71,5 @@ def visualize_training_batch(images, masks, epoch):
             axes[1, i].axis('off')
     
     plt.tight_layout()
-    plt.savefig(f'training_batch_visualization_epoch_{epoch}.png')
+    plt.savefig(f'training_batches/training_batch_visualization_epoch_{epoch}.png')
     plt.close()
