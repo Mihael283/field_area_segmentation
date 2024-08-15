@@ -15,6 +15,8 @@ def load_ndvi(image_path):
 
 def segmentation_to_polygon(segmentation):
     coords = np.array(segmentation).reshape(-1, 2)
+    if len(coords) < 3:
+        return None
     return Polygon(coords)
 
 def draw_polygon(draw, polygon, outline_color, fill_color):
@@ -33,7 +35,8 @@ def visualize_result(image_path, annotations, output_path):
     
     for annotation in annotations:
         polygon = segmentation_to_polygon(annotation['segmentation'])
-        draw_polygon(draw, polygon, outline_color=(255, 0, 0), fill_color=(255, 0, 0, 64))
+        if polygon is not None and polygon.is_valid:
+            draw_polygon(draw, polygon, outline_color=(255, 0, 0), fill_color=(255, 0, 0, 64))
     
     combined = Image.alpha_composite(ndvi_image.convert('RGBA'), overlay)
     

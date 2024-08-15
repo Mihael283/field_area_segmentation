@@ -20,8 +20,8 @@ class Logger:
     def log_model_config(self, model):
         self.log_data["model_config"] = {
             "name": model.__class__.__name__,
-            "n_channels": model.n_channels,
-            "n_classes": model.n_classes
+            "n_channels": 3,
+            "n_classes": 2
         }
 
     def log_optimizer_config(self, optimizer):

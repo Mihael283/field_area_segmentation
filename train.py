@@ -66,7 +66,8 @@ class CombinedLoss(nn.Module):
         return dice
 
 # Usage
-model = AdvancedUNet(n_channels=1, n_classes=1).to(device) 
+model = AdvancedUNet(n_channels=3, n_classes=1).to(device) 
+
 criterion = CombinedLoss(alpha=0.5)  # You can adjust alpha as needed
 optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-4)
 scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
