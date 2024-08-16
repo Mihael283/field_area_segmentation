@@ -78,23 +78,24 @@ class SatelliteDataset(Dataset):
             red = src.read(4).astype(float)
             nir = src.read(8).astype(float)
             swir1 = src.read(11).astype(float)
-            
+            swir2 = src.read(12).astype(float)
+
             # Calculate NDVI (Normalized Difference Vegetation Index)
             ndvi = (nir - red) / (nir + red + 1e-8)  # Add small epsilon to avoid division by zero
             ndvi = np.nan_to_num(ndvi, nan=0.0)  # Replace NaN with 0.0
             
             # Calculate NDSI (Normalized Difference Snow Index)
-            ndsi = (green - swir1) / (green + swir1 + 1e-8)  # Add small epsilon to avoid division by zero
-            ndsi = np.nan_to_num(ndsi, nan=0.0)  # Replace NaN with 0.0
+            pv_ir2 = (nir - red) / (nir + red) + (nir - swir2) / (nir + swir2 + 1e-10)
+            pv_ir2 = np.nan_to_num(pv_ir2, nan=0.0)  # Replace NaN with 0.0
             
             # Urban False Color (using NIR, Red, Green)
             urban_false_color = np.dstack((nir, red, green))
-            urban_false_color = (urban_false_color - urban_false_color.min()) / (urban_false_color.max() - urban_false_color.min() + 1e-8)
+            urban_false_color = (urban_false_color - urban_false_color.min()) / (urban_false_color.max() - urban_false_color.min() + 1e-10)
             urban_false_color = np.nan_to_num(urban_false_color, nan=0.0)  # Replace NaN with 0.0
             
             # Create a 3-channel composite image (NDVI, NDSI, Red from Urban False Color)
-            composite = np.dstack((ndvi, ndsi, urban_false_color[:, :, 1]))
-            composite = (composite - composite.min()) / (composite.max() - composite.min() + 1e-8)
+            composite = np.dstack((ndvi, pv_ir2, urban_false_color[:, :, 1]))
+            composite = (composite - composite.min()) / (composite.max() - composite.min() + 1e-10)
             composite = np.nan_to_num(composite, nan=0.0)  # Replace NaN with 0.0
 
         composite_padded, (pad_h, pad_w, new_h, new_w) = self.resize_and_pad(composite)
