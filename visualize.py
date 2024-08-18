@@ -15,8 +15,6 @@ def load_ndvi(image_path):
 
 def segmentation_to_polygon(segmentation):
     coords = np.array(segmentation).reshape(-1, 2)
-    if len(coords) < 3:
-        return None
     return Polygon(coords)
 
 def draw_polygon(draw, polygon, outline_color, fill_color):
@@ -43,7 +41,7 @@ def visualize_result(image_path, annotations, output_path):
     combined.save(output_path)
 
 
-with open('results.json', 'r') as f:
+with open('coco_annotations.json', 'r') as f:
     results = json.load(f)
 
 

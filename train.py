@@ -15,7 +15,7 @@ import torch.nn.functional as F
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 logger = Logger(log_dir="logs")
-num_epochs = 50
+num_epochs = 100
 
 image_dir = 'train_images/images'
 annotation_file = 'train_annotation.json'
@@ -24,18 +24,18 @@ transform = transforms.Compose([
     transforms.Normalize(mean=[0.485], std=[0.229])
 ])
 
-full_dataset = SatelliteDataset(image_dir, annotation_file, transform=transform, augment=False)
+full_dataset = SatelliteDataset(image_dir, annotation_file, augment=False)
 
 train_size = int(0.7 * len(full_dataset))
 val_size = len(full_dataset) - train_size
 train_indices, val_indices = torch.utils.data.random_split(range(len(full_dataset)), [train_size, val_size])
 
-train_dataset = SatelliteDataset(image_dir, annotation_file, transform=transform, augment=True)
+train_dataset = SatelliteDataset(image_dir, annotation_file, augment=True)
 train_dataset = torch.utils.data.Subset(train_dataset, train_indices)
 
 val_dataset = torch.utils.data.Subset(full_dataset, val_indices)
 
-batch_size = 4
+batch_size = 3
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=8)
 val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
 
@@ -69,7 +69,7 @@ class CombinedLoss(nn.Module):
 model = AdvancedUNet(n_channels=3, n_classes=1).to(device) 
 
 criterion = CombinedLoss(alpha=0.5)  # You can adjust alpha as needed
-optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-4)
+optimizer = optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-4)
 scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
 
 # Log configurations
