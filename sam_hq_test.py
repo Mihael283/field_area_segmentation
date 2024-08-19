@@ -8,11 +8,11 @@ import tifffile as tiff
 from skimage import measure
 from tqdm import tqdm
 import sys
-from segment_anything import sam_model_registry, SamAutomaticMaskGenerator, SamPredictor
+from segment_anything_hq import sam_model_registry, SamAutomaticMaskGenerator, SamPredictor
 
 model_type = "vit_h"
 device = "cuda:0"
-sam = sam_model_registry[model_type](checkpoint="sam_vit_h_4b8939.pth")
+sam = sam_model_registry[model_type](checkpoint="sam/sam_hq_vit_h.pth")
 sam.to(device=device)
 
 mask_generator = SamAutomaticMaskGenerator(model=sam,
