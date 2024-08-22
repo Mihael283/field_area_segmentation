@@ -8,11 +8,11 @@ import tifffile as tiff
 from skimage import measure
 from tqdm import tqdm
 import sys
-from segment_anything import sam_model_registry, SamAutomaticMaskGenerator, SamPredictor
+from segment_anything_hq import sam_model_registry, SamAutomaticMaskGenerator, SamPredictor
 
 model_type = "vit_h"
 device = "cuda:0"
-sam = sam_model_registry[model_type](checkpoint="sam_vit_h_4b8939.pth")
+sam = sam_model_registry[model_type](checkpoint="sam/sam_hq_vit_h.pth")
 sam.to(device=device)
 
 mask_generator = SamAutomaticMaskGenerator(model=sam,
@@ -40,19 +40,31 @@ def save_results_to_json(results, output_file):
     with open(output_file, 'w') as f:
         json.dump(results, f, indent=4)
 
+def calculate_ndvi(nir, red):
+    return (nir - red) / (nir + red + 1e-8)
+
 def process_images(image_dir, num_points_threshold, min_area):
     images = []
     for filename in tqdm(os.listdir(image_dir)):
         if filename.endswith('.tif'):
             image_path = os.path.join(image_dir, filename)
             image = tiff.imread(image_path)
-            band_red = image[:, :, 1]  
-            band_green = image[:, :, 3] 
-            band_blue = image[:, :, 6]  
-
-            rgb_image = np.dstack((band_red, band_green, band_blue))
-            image = (rgb_image - np.min(rgb_image)) / (np.max(rgb_image) - np.min(rgb_image))
-            segmentations = mask_generator.generate(np.array(image))  # Replace with actual function call to your segmentation model
+            
+            # Base channels: 1, 3
+            base_1 = image[:, :, 2]  # B3
+            base_3 = image[:, :, 3]  # B4
+            
+            # Urban False Color components
+            nir = image[:, :, 7]  # B8
+            red = image[:, :, 3]  # B4
+            
+            ndvi = calculate_ndvi(nir, red)
+            
+            # Combine Base (1-3) with Urban False Color
+            combined_image = np.dstack((base_1, base_3, ndvi))
+            
+            normalized_image = (combined_image - np.min(combined_image)) / (np.max(combined_image) - np.min(combined_image))
+            segmentations = mask_generator.generate(np.array(normalized_image))
             
             annotations = []
             for segmentation in segmentations:
@@ -68,13 +80,13 @@ def process_images(image_dir, num_points_threshold, min_area):
             })
     return {"images": images}
 
-
 image_dir = '/home/protostartserver2/Public/field_area_segmentation/test_images/images'
-output_file = 'results.json'
+output_file = 'results_base_ndvi_b3_b4.json'
 Number_of_point = 3
 size = 10
 
-# Process images and save results
+print("Starting image processing...")
 results = process_images(image_dir, Number_of_point, size)
 save_results_to_json(results, output_file)
 print(f"Results saved to {output_file}")
+print("Processing completed.")

@@ -23,14 +23,12 @@ mask_generator = SamAutomaticMaskGenerator(model=sam,
     crop_n_points_downscale_factor=2,
     min_mask_region_area=100)  # Requires open-cv to run post-processing)
 
-def extract_polygons(segmentation, num_points_threshold, min_area):
+def extract_polygons(segmentation):
     contours = measure.find_contours(segmentation, 0.5)
-    contours = [contour for contour in contours if len(contour) >= num_points_threshold]
-    contours = [contour for contour in contours if Polygon(contour).area >= min_area]
     polygons = []
     for contour in contours:
         polygon = []
-        for point in contour: 
+        for point in contour:
             polygon.append(float(point[1]))  # X coordinate
             polygon.append(float(point[0]))  # Y coordinate
         polygons.append(polygon)
@@ -44,79 +42,115 @@ def calculate_ndvi(nir, red):
     return (nir - red) / (nir + red + 1e-8)
 
 def calculate_urban_false_color(swir, nir, red):
-    return np.dstack((swir, nir, red))
+    return swir  # Return only the SWIR band
 
 def calculate_pv_ir2(nir, swir1, swir2):
-    return np.dstack((nir, swir1, swir2))
+    return nir  # Return only the NIR band
 
-def process_images(image_dir, num_points_threshold, min_area, output_file):
-    images = []
-    image_files = [f for f in os.listdir(image_dir) if f.endswith('.tif')][:4]
-    total_images = len(image_files)
+def process_image(image_path, permutation, channel_names):
+    image = tiff.imread(image_path)
     
+    def get_channel(channel):
+        if isinstance(channel, str):
+            if channel == 'NDVI':
+                nir = image[:, :, 7]  # B8
+                red = image[:, :, 3]  # B4
+                return calculate_ndvi(nir, red)
+            elif channel == 'Urban_False_Color':
+                swir = image[:, :, 10]  # B11
+                nir = image[:, :, 7]   # B8
+                red = image[:, :, 3]   # B4
+                return calculate_urban_false_color(swir, nir, red)
+            elif channel == 'PV-IR2':
+                nir = image[:, :, 7]    # B8
+                swir1 = image[:, :, 10] # B11
+                swir2 = image[:, :, 11] # B12
+                return calculate_pv_ir2(nir, swir1, swir2)
+            else:
+                return image[:, :, channel_names.index(channel)]
+        else:
+            return image[:, :, channel]
+
+    channels = [get_channel(channel) for channel in permutation]
+    processed_image = np.dstack(channels)
+    
+    normalized_image = (processed_image - np.min(processed_image)) / (np.max(processed_image) - np.min(processed_image))
+    
+    segmentations = mask_generator.generate(np.array(normalized_image)) 
+    annotations = []
+    for segmentation in segmentations:
+        polygons = extract_polygons(segmentation['segmentation'])
+        for polygon in polygons:
+            annotations.append({
+                "class": "field",
+                "segmentation": polygon
+            })
+    return {
+        "file_name": os.path.basename(image_path),
+        "annotations": annotations
+    }
+
+def process_images(image_dir, output_dir):
     channel_names = ['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B9', 'B11', 'B12']
+    special_indices = ['NDVI', 'Urban_False_Color', 'PV-IR2']
     
-    for img_idx, filename in enumerate(image_files, 1):
-        print(f"\nProcessing image {img_idx}/{total_images}: {filename}")
-        
-        image_path = os.path.join(image_dir, filename)
-        image = tiff.imread(image_path)
-        
-        channel_combinations = list(itertools.combinations(range(12), 3))
-        
-        permutations = []
-        for combo in channel_combinations:
-            combo_name = f"{channel_names[combo[0]]}-{channel_names[combo[1]]}-{channel_names[combo[2]]}"
-            combo_image = np.dstack((image[:,:,combo[0]], image[:,:,combo[1]], image[:,:,combo[2]]))
-            permutations.append((combo_name, combo_image))
-        
-        #NDVI
-        ndvi = calculate_ndvi(image[:,:,7], image[:,:,3])  # B8 (NIR) and B4 (Red)
-        permutations.append(('NDVI', np.dstack((ndvi, ndvi, ndvi))))
-        
-        #Urban False Color
-        urban_false_color = calculate_urban_false_color(image[:,:,10], image[:,:,7], image[:,:,3])  # B11 (SWIR1), B8 (NIR), B4 (Red)
-        permutations.append(('Urban False Color', urban_false_color))
-        
-        #PV-IR2
-        pv_ir2 = calculate_pv_ir2(image[:,:,7], image[:,:,10], image[:,:,11])  # B8 (NIR), B11 (SWIR1), B12 (SWIR2)
-        permutations.append(('PV-IR2', pv_ir2))
-        
-        total_permutations = len(permutations)
-        annotations = []
-        
-        for perm_idx, (index_name, image_permutation) in enumerate(permutations, 1):
-            print(f"  Processing permutation {perm_idx}/{total_permutations}: {index_name}")
-            
-            image_normalized = (image_permutation - np.min(image_permutation)) / (np.max(image_permutation) - np.min(image_permutation))
-            segmentations = mask_generator.generate(np.array(image_normalized))
-            
-            for segmentation in segmentations:
-                polygons = extract_polygons(segmentation['segmentation'], num_points_threshold, min_area)
-                for polygon in polygons:
-                    annotations.append({
-                        "class": "field",
-                        "segmentation": polygon,
-                        "index": index_name
-                    })
-        
-        images.append({
-            "file_name": filename,
-            "annotations": annotations
-        })
-        
-        interim_results = {"images": images}
-        save_results_to_json(interim_results, output_file)
-        print(f"Interim results saved after processing image {img_idx}/{total_images}: {filename}")
+    # Generate all possible 3-channel combinations
+    channel_permutations = list(itertools.combinations(range(12), 3))
     
-    return {"images": images}
+    # Create permutations including special indices
+    all_permutations = set()  # Use a set to avoid duplicates
+    for perm in channel_permutations:
+        all_permutations.add(perm)
+        for special in special_indices:
+            all_permutations.add((perm[0], perm[1], special))
+    
+    # Add special indices combinations
+    all_permutations.update(itertools.combinations(special_indices, 3))
+    
+    # Get existing result files
+    existing_results = set(os.listdir(output_dir))
+    
+    # Get all .tif files and sort them
+    all_images = sorted([f for f in os.listdir(image_dir) if f.endswith('.tif')])
+    
+    # Select specific images (1st, 15th, 25th)
+    selected_images = [all_images[i] for i in [0, 14, 24] if i < len(all_images)]
+    
+    total_permutations = len(all_permutations)
+    processed_permutations = 0
+    
+    for permutation in all_permutations:
+        perm_name = "-".join([channel_names[i] if isinstance(i, int) else i for i in permutation])
+        output_file = f'segmentation_results_{perm_name}.json'
+        
+        if output_file in existing_results:
+            print(f"Skipping existing permutation: {perm_name}")
+            processed_permutations += 1
+            continue
+        
+        print(f"\nProcessing permutation: {perm_name} ({processed_permutations + 1}/{total_permutations})")
+        
+        results = {"images": []}
+        for filename in tqdm(selected_images):
+            image_path = os.path.join(image_dir, filename)
+            image_result = process_image(image_path, permutation, channel_names)
+            results["images"].append(image_result)
+        
+        output_path = os.path.join(output_dir, output_file)
+        save_results_to_json(results, output_path)
+        print(f"Results saved to {output_path}")
+        
+        processed_permutations += 1
 
-image_dir = '/home/protostartserver2/Public/field_area_segmentation/test_images/images'
-output_file = 'test_sam.json'
-Number_of_point = 3
-size = 10
+    print(f"Processing completed. Total permutations processed: {processed_permutations}/{total_permutations}")
+
+# Directory containing images
+image_dir = '/home/protostartserver2/Public/field_area_segmentation/train_images/images'
+output_dir = '/home/protostartserver2/Public/field_area_segmentation/testing_channels'
+
+# Ensure the output directory exists
+os.makedirs(output_dir, exist_ok=True)
 
 print("Starting image processing...")
-results = process_images(image_dir, Number_of_point, size, output_file)
-print(f"Final results saved to {output_file}")
+process_images(image_dir, output_dir)
 print("Processing completed.")
