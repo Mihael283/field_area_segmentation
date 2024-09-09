@@ -6,7 +6,6 @@ test_images.zip
 sample.json
 train_annotations.json
 train_images.zip
-*.png
 *.pth
 test*.py
 training_log*
