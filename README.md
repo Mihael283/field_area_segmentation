@@ -58,7 +58,7 @@ Combination of channels 1, 3 and NDVI came about from grid search of different c
 
 ## Examples
 
-Normalized Difference Vegetation Index (NDVI) example from test set:
+Soil Adjusted Vegetation Index (SAVI) example from test set:
 
 <div style="text-align: center;">
     <img src="ndvi.png" alt="NDVI Visualization" style="max-width: 100%; height: auto;">
